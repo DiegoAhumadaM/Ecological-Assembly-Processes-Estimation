@@ -1,0 +1,219 @@
+##---------------------------------------------------##
+####    Ecological Assembly Processes Estimation   ####
+##---------------------------------------------------##
+
+# This script was developped by Guillaume Schwob and is based on the scripts developped by Stegen et al. 2013 (https://github.com/stegen/Stegen_etal_ISME_2013) and Richter-Heitmann et al. 2020 (https://github.com/FranzKrah/raup_crick)
+# QPE Analysis
+
+# Load packages
+library(phyloseq)
+library(metagMisc)
+library(microbiome)
+library(ape)
+library(MicEco)
+library(reshape2)
+library(dplyr)
+
+
+##### Functions to load ####
+
+## This code is part of the study:
+## Stochastic dispersal rather than deterministic selection explains the spatio-temporal distribution of soil bacteria in a temperate grassland
+## doi: 10.3389/fmicb.2020.01391
+## Franz-Sebastian Krah
+## 02 - 27 - 2019
+
+#' @title raup_crick_abu_par
+#' @param com community matrix (spXsite)
+#' @param reps number of bootstraps
+#' @param ncore number of cores (serial: ncore = 1; parallel > 1)
+#' @param classic_metric standardizes the metric to range from -1 to 1
+#' @param split_ties adds half of the number of null observations that are equal to the observed number of shared species to the calculation- this is highly recommended
+#' @details Parallelized version of the Raup-Crick algorithm for "abundance" data (Stegen et al. 2013).
+#' Previous code loops over each pairwise community combination;
+#' here we randomize the full community matrix and compute Bray-Curtis for the 
+#' full matrix and then conduct subsequent Raup-Crick calculations as in Stegen.
+#' This increaes computational speed. Further here implemented as multi-core version.
+#' The code is acurate and fast (see paper, supplement section D)
+#' @author Franz-Sebastian Krah
+#' 
+
+
+raup_crick_abu_par <- function(com, reps, ncore, classic_metric=FALSE, split_ties=TRUE){
+  
+  require("parallel")
+  require("doSNOW")
+  
+  pb <- txtProgressBar(max =reps, style = 3)
+  progress <- function(n) setTxtProgressBar(pb, n)
+  opts <- list(progress = progress)
+  cl <- makeCluster(ncore)
+  registerDoSNOW(cl)
+  
+  bray.rand <- foreach(randomize = 1:reps, 
+                       .options.snow = opts,
+                       .packages = c("vegan", "picante")) %dopar% {
+                         
+                         
+                         null.dist <- com*0
+                         
+                         for(i in 1:nrow(com)){
+                           com.pa <- (com>0)*1
+                           gamma<-ncol(com)
+                           occur<-apply(com>0, MARGIN=2, FUN=sum)
+                           abundance<-apply(com, MARGIN=2, FUN=sum)
+                           com1 <- rep(0,gamma)
+                           
+                           com1[sample(1:gamma, sum(com.pa[i,]), replace=FALSE, prob=occur)]<-1
+                           com1.samp.sp = sample(which(com1>0), (sum(com[i,])-sum(com1)),
+                                                 replace=TRUE,prob=abundance[which(com1>0)]);
+                           com1.samp.sp = cbind(com1.samp.sp,1)
+                           com1.sp.counts = as.data.frame(tapply(com1.samp.sp[,2],com1.samp.sp[,1],FUN=sum))
+                           colnames(com1.sp.counts) = 'counts'
+                           com1.sp.counts$sp = as.numeric(rownames(com1.sp.counts))
+                           com1[com1.sp.counts$sp] = com1[com1.sp.counts$sp] + com1.sp.counts$counts
+                           x <- com1
+                           null.dist[i,] <- x
+                           rm('com1.samp.sp','com1.sp.counts')
+                         }
+                         as.matrix(vegdist(null.dist, "bray"))
+                       }
+  stopCluster(cl)
+  
+  ## Calculate beta-diversity for obs metacommunity
+  bray.obs <- as.matrix(vegdist(com, "bray"))
+  
+  ##how many null observations is the observed value tied with?
+  null_bray_curtis <- bray.rand
+  num_exact_matching_in_null <- lapply(null_bray_curtis, function(x) x==bray.obs)
+  num_exact_matching_in_null <- apply(simplify2array(num_exact_matching_in_null), 1:2, sum)
+  
+  ##how many null values are smaller than the observed *dissimilarity*?
+  num_less_than_in_null <- lapply(null_bray_curtis, function(x) (x<bray.obs)*1)
+  num_less_than_in_null <- apply(simplify2array(num_less_than_in_null), 1:2, sum)
+  
+  
+  rc = (num_less_than_in_null)/reps; # rc;
+  
+  if(split_ties){
+    
+    rc = ((num_less_than_in_null +(num_exact_matching_in_null)/2)/reps)
+  };
+  
+  
+  if(!classic_metric){
+    
+    ##our modification of raup crick standardizes the metric to range from -1 to 1 instead of 0 to 1
+    
+    rc = (rc-.5)*2
+  };
+  
+  return(rc)
+  
+}
+
+
+load("Fildes_wat.RData") #load phyloseq
+
+wat.dat = phyloseq_to_df(Fildes_wat, addtax = F, addtot = F, addmaxrank = F, sorting = "abundance")
+rownames(wat.dat) <- wat.dat[,1]#Assign OTU name to the rownames
+wat.dat[,1] <- NULL#remove first column
+wat.dat=as.data.frame(wat.dat)#transform data frame
+wat.dat.t=t(wat.dat)#transpose data frame row=samples, columns=OTUs
+meta.wat = microbiome::meta(Fildes_wat)#Metadata
+b<-as.data.frame(meta.wat$Compartment)#vector with type of habitat
+row.names(b) = meta.wat[,1]#assign samples names as rownames 
+names(b)[names(b) == 'meta.wat$Compartment'] <- 'Compartment'
+mer.wat<-merge(b, wat.dat.t, by=0, all=TRUE)#merge vector habitat with abundance data
+row.names(mer.wat) = mer.wat$Row.names
+com.wat <- mer.wat#community data
+env.war <- com.wat[, 1:2] #information of samples
+com.wat <- com.wat[, -c(1:2)] #remove 2 first columns
+rowSums(com.wat>0) #total abundances per sample
+com.wat <- com.wat[rowSums(com.wat>0) > 1, ] #keep samples with at least one abundances
+colSums(com.wat>0) #total abundances per OTUs
+com.wat <- com.wat[ , colSums(com.wat>0) >= 1, ] #keep OTUs with at least one abundances
+dim(com.wat)
+# 81 1409
+
+## Phylogenetic beta turnover
+# simulating a phylogenetic tree
+tree.wat<- ape::read.tree("PhyML_Newick_tree.withoutConstrains.rooted")
+tree.wat$tip.label
+# get only the tree tips corresponding to the mer files colnames
+pruned.phy.wat <- ape::drop.tip(tree.wat, tree.wat$tip.label[!tree.wat$tip.label %in% colnames(com)])#Subset the tree with the OTUs from sediment
+pruned.phy.wat$tip.label
+phy.dist.wat <- cophenetic(pruned.phy.wat)#extract cophenetic distances between OTUs : measure of the phylogenetic distance
+rownames(phy.dist.wat) <- colnames(phy.dist.wat) <- colnames(com.wat) #To order row and columns of the distance matrix with the same order as OTU table
+# Check the order of the distance matrices.
+head(rownames(phy.dist.wat))
+head(colnames(phy.dist.wat))
+head(colnames(com.wat))
+
+##### RUN once and save the outputs #####
+
+# Run betaMNTD/=-betaNTI
+nti_Fildes_wat <- MicEco::ses.comdistnt(com.wat, phy.dist.wat, null.model = "taxa.labels",
+                                        runs = 999, iterations = 999, cores = 20)
+saveRDS(nti_Fildes_wat,"nti_Fildes_wat.RDS")
+
+# Raup-Crick
+rc_Fildes_wat <- raup_crick_abu_par(com.wat, reps = 999, ncore = 14)
+rc2 = data.frame(as.matrix(rc_Fildes_wat))
+colnames(rc2)=colnames(rc_Fildes_wat$comdistnt.obs.z)
+
+saveRDS(rc2,"rc_Fildes_wat.RDS")
+
+##### Outputs processing #####
+
+nti_Fildes_wat <- readRDS("~/nti_Fildes_wat.RDS")
+rc_Fildes_wat <- readRDS("~/rc_Fildes_wat.RDS")
+
+nti_wat <-nti_Fildes_wat$comdistnt.obs.z %>% melt() #Extract results and transform matrix, one value for each samples comparison
+rc_wat <-rc_Fildes_wat%>% melt()  #Extract results and transform matrix, one value for each samples comparison
+
+#Make a matrix with both results and ad column with the corresponding ecological process based on the BNTI and RC values
+matrix_bnti_rc_wat <-nti_wat %>% mutate(RC=rc_wat$value) %>% rename(beta_NTI = value)
+
+matrix_bnti_rc_wat$beta_NTI = as.numeric(matrix_bnti_rc_wat$beta_NTI) #transform to numeric
+matrix_bnti_rc_wat$RC = as.numeric(matrix_bnti_rc_wat$RC) #transform to numeric
+
+####### Processes  estimation #####
+
+#function for the calculation of assembly processes 
+evaluate_conditions <- function(data_frame) {
+  num_rows <- nrow(data_frame)
+  results <- vector("character", length = num_rows)
+  
+  for (i in 1:num_rows) {
+    beta_NTI <- data_frame[i, "beta_NTI"]
+    RC <- data_frame[i, "RC"]
+    
+    if (!is.na(beta_NTI) && !is.na(RC)) {
+      if (beta_NTI < -2) {
+        results[i] <- "Homogeneous selection"
+      } else if (beta_NTI > 2) {
+        results[i] <- "Variable selection"
+      } else if (-2 <= beta_NTI && beta_NTI <= 2) {
+        if (RC < -0.95) {
+          results[i] <- "Homogenizing dispersal"
+        } else if (RC > 0.95) {
+          results[i] <- "Dispersal limitation"
+        } else if (-0.95 <= RC && RC <= 0.95) {
+          results[i] <- "Ecological drift"
+        }
+      }
+    } else {
+      results[i] <- "NA"
+    }
+  }
+  
+  return(results)
+}
+
+#calculation
+result_labels <- evaluate_conditions(matrix_bnti_rc_wat) ####calculation
+matrix_bnti_rc_wat$Process <- result_labels ### add results to new column 
+
+
+
