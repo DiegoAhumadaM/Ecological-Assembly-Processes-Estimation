@@ -347,8 +347,4 @@ for (micro in microenv) {
   }
 }
 
-result_summary_df$effect = "Year-induced"
-Year = result_summary_df
-# Print the results
-print(Year)
-
+result_summary_df
