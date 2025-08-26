@@ -113,6 +113,7 @@ raup_crick_abu_par <- function(com, reps, ncore, classic_metric=FALSE, split_tie
 }
 
 
+### The entire script was made using the phyloseq objects of each compartment independently.
 load("Fildes_wat.RData") #load phyloseq
 
 wat.dat = phyloseq_to_df(Fildes_wat, addtax = F, addtot = F, addmaxrank = F, sorting = "abundance")
@@ -216,4 +217,138 @@ result_labels <- evaluate_conditions(matrix_bnti_rc_wat) ####calculation
 matrix_bnti_rc_wat$Process <- result_labels ### add results to new column 
 
 
+####### Construction of annotated matrices + Quantification of the relative contribution of assembly processes #####
+
+matrix_wat = na.omit(matrix_bnti_rc_wat)
+
+matrix_wat$Dataset=NA
+matrix_wat$Micro=NA
+
+#Construction of each category 
+matrix_wat_2 <- matrix_wat %>%
+  mutate(Micro = ifelse(Compartment1 == "Water" & Compartment2 == "Water", "Water", Micro)) %>%
+  mutate(Dataset = ifelse(Year1 == Year2 &
+                            Ecosystem1 == Ecosystem2 &
+                            Compartment1 == "Water" & Compartment2 == "Water", "Intra ecosystem", Dataset)) %>% 
+  mutate(Dataset = ifelse(Year1 == Year2 &
+                            Ecosystem1 != Ecosystem2 &
+                            Compartment1 == "Water" & Compartment2 == "Water", "Inter ecosystem", Dataset)) %>% #spatial turnover
+  mutate(Dataset = ifelse(Year1 != Year2 &
+                            Ecosystem1 == Ecosystem2 &
+                            Compartment1 == "Water" & Compartment2 == "Water", "Inter years", Dataset)) %>% #temporal turnover
+  mutate(Dataset = ifelse(Year1 != Year2 &
+                            Ecosystem1 != Ecosystem2 &
+                            Compartment1 == "Water" & Compartment2 == "Water", "d.year_d.eco", Dataset)) %>% # all samples
+  na.omit()
+nrow(matrix_wat_2)
+# 6480 rows
+
+counts <- matrix_wat_2 %>%
+  mutate(Conca = paste(Year1, Year2, Ecosystem1, Ecosystem2, sep = "_")) %>%
+  dplyr::select(-Year1, -Year2, -Ecosystem1, -Ecosystem2) %>%
+  dplyr::group_by(Micro, Dataset, Conca, Process) %>%
+  dplyr::summarise(Count = dplyr::n(), .groups = "drop")
+
+all_levels1 <- expand.grid(Conca=levels(factor(counts$Conca)),
+                           Process = levels(factor(counts$Process)),
+                           Micro= levels(factor(counts$Micro)),
+                           Dataset=levels(factor(counts$Dataset)))
+# Merge the counts with all possible levels and fill missing counts with 0
+result_df1 <- all_levels1 %>%
+  left_join(counts, by = c("Micro","Dataset","Conca","Process")) %>%
+  mutate(Count = ifelse(is.na(Count), 0, Count))
+# View(result_df)
+sum(result_df1$Count)
+# 6480 counts
+
+# Transform in %
+result_df3 <- result_df1 %>%
+  dplyr::group_by(Micro, Dataset, Conca, Process) %>%
+  dplyr::summarise(count.tot=sum(Count)) %>%
+  dplyr::ungroup()
+
+sum(result_df3$count.tot)
+# 6480 rows
+# View(result_df3)
+
+# Calculate the percentage within each condition
+result_df4 <- result_df3 %>%
+  dplyr::group_by(Micro, Dataset, Conca) %>%
+  mutate(percent = (count.tot / sum(count.tot)) * 100) %>%
+  dplyr::ungroup() %>%
+  na.omit()
+
+sum(result_df4$count.tot) # 6480 counts
+# View(result_df3)
+# File ok !
+result_df4_wat = result_df4
+# Calculate the mean and the se
+mean_result_df4 <- result_df4_wat %>%
+  dplyr::group_by(Micro,Dataset, Process) %>%
+  dplyr::summarise(mean_percent = mean(percent),
+            se = sd(percent) / sqrt(n()))
+
+
+
+##### Permutations calculate change in contribution####
+#This permutation was related by comparing each category.
+
+# Load the required library
+library(exactRankTests)
+
+# List of different compartment
+microenv <- c("Sediment", "Water")
+
+# List of different result values
+processes <- c("Dispersal limitation", "Ecological drift", "Homogenizing dispersal", "Homogeneous selection", "Variable selection")
+
+# Create an empty dataframe to store the results
+result_summary_df <- data.frame(Microenvironment = character(0), Result = character(0), Mean_Difference = numeric(0), 
+                                Lower_CI = numeric(0), Upper_CI = numeric(0), P_Value = numeric(0))
+
+# Perform the analysis for each microenvironment and process 
+#  data_combined4: datframe contains the calculated percentages of the assembly processes within each category for each compartment
+for (micro in microenv) {
+  result_df3_t <- data_combined4[data_combined4$Micro == micro, ]
+  
+  for (result_value in processes) {
+    a <- result_df3_t[result_df3_t$Dataset == "d.year_s.eco" & result_df3_t$Process == result_value, ]
+    b <- result_df3_t[result_df3_t$Dataset == "s.year_s.eco" & result_df3_t$Process == result_value, ]
+    
+    d.year_s.eco <- as.numeric(a$percent)
+    s.year_s.eco <- as.numeric(b$percent)
+    
+    # Calculate mean difference consistently
+    mean_difference <- mean(d.year_s.eco) - mean(s.year_s.eco)
+    
+    # Perform permutation test with confidence interval
+    perm_test_result <- perm.test(d.year_s.eco, s.year_s.eco, alternative = "two.sided", method = "exact")
+    
+    # Calculate standard error
+    se <- sqrt(var(d.year_s.eco)/length(d.year_s.eco) + var(s.year_s.eco)/length(s.year_s.eco))
+    
+    # Calculate margin of error
+    margin_of_error <- abs(qnorm(0.975) * se)
+    
+    # Calculate 95% confidence interval
+    lower_ci <- mean_difference - margin_of_error
+    upper_ci <- mean_difference + margin_of_error
+    
+    # Create a new row for the result summary dataframe
+    result_summary_row <- data.frame(Microenvironment = micro,
+                                     Result = result_value,
+                                     Mean_Difference = mean_difference,
+                                     Lower_CI = lower_ci,
+                                     Upper_CI = upper_ci,
+                                     P_Value = perm_test_result$p.value)
+    
+    # Append the result summary row to the dataframe
+    result_summary_df <- bind_rows(result_summary_df, result_summary_row)
+  }
+}
+
+result_summary_df$effect = "Year-induced"
+Year = result_summary_df
+# Print the results
+print(Year)
 
