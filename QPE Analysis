@@ -238,7 +238,7 @@ matrix_wat_2 <- matrix_wat %>%
                             Compartment1 == "Water" & Compartment2 == "Water", "Inter years", Dataset)) %>% #temporal turnover
   mutate(Dataset = ifelse(Year1 != Year2 &
                             Ecosystem1 != Ecosystem2 &
-                            Compartment1 == "Water" & Compartment2 == "Water", "d.year_d.eco", Dataset)) %>% # all samples
+                            Compartment1 == "Water" & Compartment2 == "Water", "all samples", Dataset)) %>% # all samples
   na.omit()
 nrow(matrix_wat_2)
 # 6480 rows
@@ -312,20 +312,20 @@ for (micro in microenv) {
   result_df3_t <- data_combined4[data_combined4$Micro == micro, ]
   
   for (result_value in processes) {
-    a <- result_df3_t[result_df3_t$Dataset == "d.year_s.eco" & result_df3_t$Process == result_value, ]
-    b <- result_df3_t[result_df3_t$Dataset == "s.year_s.eco" & result_df3_t$Process == result_value, ]
+    a <- result_df3_t[result_df3_t$Dataset == "Intra ecosystem" & result_df3_t$Process == result_value, ]
+    b <- result_df3_t[result_df3_t$Dataset == "Inter ecosystem" & result_df3_t$Process == result_value, ]
     
-    d.year_s.eco <- as.numeric(a$percent)
-    s.year_s.eco <- as.numeric(b$percent)
+    Intra ecosystem <- as.numeric(a$percent)
+    Inter ecosystem <- as.numeric(b$percent)
     
     # Calculate mean difference consistently
-    mean_difference <- mean(d.year_s.eco) - mean(s.year_s.eco)
+    mean_difference <- mean(Intra ecosystemo) - mean(Inter ecosystem)
     
     # Perform permutation test with confidence interval
-    perm_test_result <- perm.test(d.year_s.eco, s.year_s.eco, alternative = "two.sided", method = "exact")
+    perm_test_result <- perm.test(Intra ecosystem, Inter ecosystem, alternative = "two.sided", method = "exact")
     
     # Calculate standard error
-    se <- sqrt(var(d.year_s.eco)/length(d.year_s.eco) + var(s.year_s.eco)/length(s.year_s.eco))
+    se <- sqrt(var(Intra ecosystem)/length(Intra ecosystem) + var(Inter ecosystem)/length(Inter ecosystem))
     
     # Calculate margin of error
     margin_of_error <- abs(qnorm(0.975) * se)
